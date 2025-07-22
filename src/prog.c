@@ -107,6 +107,9 @@ int xdp_prog_main(struct xdp_md *ctx)
     // Cursor pointer to the reading location of the packet
     void *cursor = data;
 
+    // Calculate the offset between the beginning of the packet and the IPv4 ethernet header
+    u32 offset = 0;
+
     // Latest EtherType on cursor
     u16 eth_proto = 0;
 
@@ -166,7 +169,8 @@ int xdp_prog_main(struct xdp_md *ctx)
         goto submit;
     }
 
-    /* Initializing the fib lookup parameters */
+    /* Initializing the paths & fib lookup parameters */
+    DSRPv4_t *path4 = NULL;
     struct bpf_fib_lookup fib_params = {};
 
     fib_params.l4_protocol = evt->l4_proto;
@@ -192,7 +196,7 @@ int xdp_prog_main(struct xdp_md *ctx)
         key4.cvlan = evt->c_vlan;             /* inner VLAN */
 
         /* Try to find a matching provider-facing path */
-        DSRPv4_t *path4 = bpf_map_lookup_elem(&routing_tablev4, &key4);
+        path4 = bpf_map_lookup_elem(&routing_tablev4, &key4);
         if (!path4)
         {
             evt->action = ROUTER_ACTION_NO_ROUTE;
@@ -211,10 +215,8 @@ int xdp_prog_main(struct xdp_md *ctx)
         // note(smalpel): [DEV] ip src+dst must be rewritten & csum recalculated BEFORE the next operation!
         //
 
-        // Calculate the offset between the beginning of the packet and the IPv4 ethernet header
-        u32 offset = offset_from_event(evt);
-
         // Now rewrite src/dst IPv4 headers
+        offset = offset_from_event(evt);
         if (rewrite_ipv4(ctx, offset, path4->advertised, path4->target) < 0)
             goto submit;
 
@@ -239,6 +241,10 @@ int xdp_prog_main(struct xdp_md *ctx)
         // Rewrite mac addresses
         if (rewrite_mac(ctx, evt->dst_mac, fib_params.dmac) < 0)
             goto submit;
+
+        // Fix TCP or UDP checksum after IP rewrite
+        if (evt->l3_proto == ETH_P_IP && path4 != NULL)
+            ipv4_l4_checksum(ctx, offset, evt->l4_proto, *(be32 *)evt->src_ip, path4->advertised, *(be32 *)evt->dst_ip, path4->target);
 
         evt->action = ROUTER_ACTION_REDIRECT;
         bpf_ringbuf_submit(evt, 0);

@@ -1,3 +1,5 @@
+#pragma once
+
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
@@ -116,5 +118,81 @@ static __always_inline int rewrite_ipv4(struct xdp_md *ctx, u32 offset, u32 new_
     if (new_dst_ip)
         iph->daddr = new_dst_ip;
 
+    // Reset checksum before recomputing
+    iph->check = 0;
+
+    // Compute IPv4 header checksum (20 bytes, no options)
+    __u32 sum = 0;
+    __u16 *ptr = (__u16 *)iph;
+
+#pragma clang loop unroll(full)
+    for (int i = 0; i < (sizeof(*iph) >> 1); i++)
+    {
+        sum += (__u32)ptr[i];
+    }
+
+    // Fold to 16 bits
+    sum = (sum & 0xFFFF) + (sum >> 16);
+    sum = (sum & 0xFFFF) + (sum >> 16);
+
+    iph->check = ~sum;
+
     return 0;
+}
+
+static __always_inline void ipv4_l4_checksum(struct xdp_md *ctx, u32 ip_offset, u8 l4_proto, be32 old_saddr, be32 new_saddr, be32 old_daddr, be32 new_daddr)
+{
+    void *data_end = (void *)(long)ctx->data_end;
+    void *data = (void *)(long)ctx->data;
+
+    struct iphdr *iph = data + ip_offset;
+    if ((void *)(iph + 1) > data_end)
+        return;
+
+    __u32 ihl_len = iph->ihl * 4;
+    void *l4h = (void *)iph + ihl_len;
+    if (l4h + sizeof(struct tcphdr) > data_end) // minimal L4 header
+        return;
+
+    __u16 *check_field = NULL;
+    if (l4_proto == IPPROTO_TCP)
+    {
+        struct tcphdr *tcph = l4h;
+        check_field = &tcph->check;
+    }
+    else if (l4_proto == IPPROTO_UDP)
+    {
+        struct udphdr *udph = l4h;
+        check_field = &udph->check;
+        if (*check_field == 0) // UDP checksum optional → skip
+            return;
+    }
+    else
+    {
+        return; // other protocols no fix needed
+    }
+
+    // Load old checksum
+    __u16 old_csum = *check_field;
+
+    // Calculate incremental delta from pseudo-header diff
+    __u32 sum = 0;
+    sum += (~(__u16)(old_saddr >> 16)) & 0xFFFF;
+    sum += (~(__u16)(old_saddr & 0xFFFF)) & 0xFFFF;
+    sum += (new_saddr >> 16) & 0xFFFF;
+    sum += new_saddr & 0xFFFF;
+
+    sum += (~(__u16)(old_daddr >> 16)) & 0xFFFF;
+    sum += (~(__u16)(old_daddr & 0xFFFF)) & 0xFFFF;
+    sum += (new_daddr >> 16) & 0xFFFF;
+    sum += new_daddr & 0xFFFF;
+
+    // Fold delta into checksum
+    __u32 new_csum = ~old_csum & 0xFFFF;
+    new_csum += sum;
+    new_csum = (new_csum & 0xFFFF) + (new_csum >> 16);
+    new_csum = (new_csum & 0xFFFF) + (new_csum >> 16);
+    new_csum = ~new_csum;
+
+    *check_field = (__u16)new_csum;
 }
