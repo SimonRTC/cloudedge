@@ -100,3 +100,21 @@ static __always_inline void parse_ip_protocol(void **cursor, void *data_end, __u
         }
     }
 }
+
+static __always_inline int rewrite_ipv4(struct xdp_md *ctx, u32 offset, u32 new_src_ip, u32 new_dst_ip)
+{
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+
+    struct iphdr *iph = data + offset;
+
+    if ((void *)(iph + 1) > data_end)
+        return -1;
+
+    if (new_src_ip)
+        iph->saddr = new_src_ip;
+    if (new_dst_ip)
+        iph->daddr = new_dst_ip;
+
+    return 0;
+}

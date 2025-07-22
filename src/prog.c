@@ -207,6 +207,13 @@ int xdp_prog_main(struct xdp_md *ctx)
         //
         // note(smalpel): [DEV] ip src+dst must be rewritten & csum recalculated BEFORE the next operation!
         //
+
+        // Calculate the offset between the beginning of the packet and the IPv4 ethernet header
+        u32 offset = offset_from_event(evt);
+
+        // Now rewrite src/dst IPv4 headers
+        if (rewrite_ipv4(ctx, offset, path4->advertised, path4->target) < 0)
+            goto submit;
     }
     else if (evt->l3_proto == ETH_P_IPV6)
     {

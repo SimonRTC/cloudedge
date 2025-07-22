@@ -129,3 +129,17 @@ static __always_inline int push_vlans(struct xdp_md *ctx, u16 svlan, u16 cvlan)
 
     return 0;
 }
+
+static __always_inline u32 offset_from_event(event_t *evt)
+{
+    u32 offset = sizeof(struct ethhdr); // Always start after Ethernet header (14 bytes)
+
+    // Add 4 bytes for each VLAN tag present
+    if (evt->s_vlan)
+        offset += sizeof(struct vlan_hdr);
+
+    if (evt->c_vlan)
+        offset += sizeof(struct vlan_hdr);
+
+    return offset;
+}
