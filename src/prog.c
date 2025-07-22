@@ -175,6 +175,9 @@ int xdp_prog_main(struct xdp_md *ctx)
     // fib_params.tot_len = 0; mandatory?
     fib_params.ifindex = ctx->ingress_ifindex;
 
+    // Destination svlan and cvlan
+    u16 new_svlan = 0, new_cvlan = 0;
+
     if (evt->l3_proto == ETH_P_IP)
     {
 
@@ -214,6 +217,10 @@ int xdp_prog_main(struct xdp_md *ctx)
         // Now rewrite src/dst IPv4 headers
         if (rewrite_ipv4(ctx, offset, path4->advertised, path4->target) < 0)
             goto submit;
+
+        /* Fill vlans info */
+        new_svlan = path4->svlan;
+        new_cvlan = path4->cvlan;
     }
     else if (evt->l3_proto == ETH_P_IPV6)
     {
@@ -224,6 +231,10 @@ int xdp_prog_main(struct xdp_md *ctx)
     int rc = bpf_fib_lookup(ctx, &fib_params, sizeof(fib_params), 0);
     if (rc == BPF_FIB_LKUP_RET_SUCCESS)
     {
+
+        // Rewrite vlan stack (pop, push or update according to the new s-vlan and c-vlan)
+        if (rewrite_vlans(ctx, evt, new_svlan, new_cvlan) < 0)
+            goto submit;
 
         // Rewrite mac addresses
         if (rewrite_mac(ctx, evt->dst_mac, fib_params.dmac) < 0)

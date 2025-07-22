@@ -143,3 +143,103 @@ static __always_inline u32 offset_from_event(event_t *evt)
 
     return offset;
 }
+
+/* Rewrite VLAN stack to exactly match svlan/cvlan */
+static __always_inline int rewrite_vlans(struct xdp_md *ctx, event_t *evt, u16 svlan, u16 cvlan)
+{
+
+    /* Count current vlans */
+    int current_vlans = 0;
+    if (evt->s_vlan)
+        current_vlans++;
+    if (evt->c_vlan)
+        current_vlans++;
+
+    /* Count desired vlans */
+    int desired_vlans = 0;
+    if (svlan)
+        desired_vlans++;
+    if (cvlan)
+        desired_vlans++;
+
+    int diff = desired_vlans - current_vlans;
+
+    /* Adjust head for pop/push if needed */
+    if (diff < 0)
+    {
+        /* POP extra vlan(s) */
+        int pop_bytes = -diff * sizeof(struct vlan_hdr);
+        if (bpf_xdp_adjust_head(ctx, pop_bytes) < 0)
+            return -1;
+    }
+    else if (diff > 0)
+    {
+        /* PUSH missing vlan(s) */
+        int push_bytes = diff * sizeof(struct vlan_hdr);
+        if (bpf_xdp_adjust_head(ctx, -push_bytes) < 0)
+            return -1;
+    }
+
+    /* Reload data pointers after adjust */
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+
+    /* Must have Ethernet header */
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end)
+        return -1;
+
+    /* === Case 0: No VLAN desired === */
+    if (desired_vlans == 0)
+    {
+        eth->h_proto = bpf_htons(ETH_P_IP);
+        return 0;
+    }
+
+    /* === Case 1 or 2 vlans desired === */
+    void *cursor = data + sizeof(*eth);
+
+    /* Outer VLAN always written if svlan requested */
+    if (svlan)
+    {
+        struct vlan_hdr *vh = cursor;
+        if ((void *)(vh + 1) > data_end)
+            return -1;
+
+        vh->h_vlan_TCI = bpf_htons(svlan & 0x0FFF);
+
+        if (cvlan)
+        {
+            /* QinQ: outer points to inner VLAN */
+            vh->h_vlan_encapsulated_proto = bpf_htons(ETH_P_8021Q);
+            eth->h_proto = bpf_htons(ETH_P_8021AD); /* outer QinQ tag */
+        }
+        else
+        {
+            /* Single VLAN: outer points directly to IP */
+            vh->h_vlan_encapsulated_proto = bpf_htons(ETH_P_IP);
+            eth->h_proto = bpf_htons(ETH_P_8021Q); /* classic VLAN */
+        }
+
+        cursor += sizeof(*vh);
+    }
+
+    /* Inner VLAN if requested */
+    if (cvlan)
+    {
+        struct vlan_hdr *vh = cursor;
+        if ((void *)(vh + 1) > data_end)
+            return -1;
+
+        vh->h_vlan_TCI = bpf_htons(cvlan & 0x0FFF);
+        vh->h_vlan_encapsulated_proto = bpf_htons(ETH_P_IP);
+
+        /* If only cvlan (no svlan), outer ethertype must be 802.1Q */
+        if (!svlan)
+            eth->h_proto = bpf_htons(ETH_P_8021Q);
+
+        cursor += sizeof(*vh);
+    }
+
+    return 0;
+}

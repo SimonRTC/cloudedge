@@ -52,7 +52,7 @@ func main() {
 		Advertised: providerAdv,    // router IP facing provider core
 		Target:     providerTarget, // NAT or next-hop
 		Svlan:      0,              // no extra VLAN on provider side
-		Cvlan:      10,             // no inner VLAN
+		Cvlan:      666,            // no inner VLAN
 	}); err != nil {
 		klog.Fatal(err)
 	}
