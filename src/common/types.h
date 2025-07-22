@@ -245,4 +245,4 @@ struct event
     __u8 action; // 0=DROP, 1=REDIRECT, 2=ALLOW, etc.
 
     __u8 _pad; /* <-- extra pad to align to 58 like Go */
-} __attribute__((packed));
+} __attribute__((packed)) typedef event_t;

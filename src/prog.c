@@ -203,6 +203,10 @@ int xdp_prog_main(struct xdp_md *ctx)
         fib_params.family = AF_INET;
         fib_params.ipv4_src = path4->advertised;
         fib_params.ipv4_dst = path4->target;
+
+        //
+        // note(smalpel): [DEV] ip src+dst must be rewritten & csum recalculated BEFORE the next operation!
+        //
     }
     else if (evt->l3_proto == ETH_P_IPV6)
     {
@@ -214,7 +218,9 @@ int xdp_prog_main(struct xdp_md *ctx)
     if (rc == BPF_FIB_LKUP_RET_SUCCESS)
     {
 
-        // note(smalpel): [DEV] mac src+dst & ip src+dst must be rewritten & csum recalculated BEFORE the following operation!
+        // Rewrite mac addresses
+        if (rewrite_mac(ctx, evt->dst_mac, fib_params.dmac) < 0)
+            goto submit;
 
         evt->action = ROUTER_ACTION_REDIRECT;
         bpf_ringbuf_submit(evt, 0);
