@@ -29,13 +29,14 @@ func main() {
 	}
 
 	// Sample network routes
+	/*
+		ann, err := arp.CreateNativeAnnouncement(iface, net.ParseIP("10.0.0.10"), 10)
+		if err != nil {
+			klog.Fatal(err)
+		}
 
-	ann, err := arp.CreateNativeAnnouncement(iface, net.ParseIP("10.0.0.10"), 10)
-	if err != nil {
-		klog.Fatal(err)
-	}
-
-	proxy.AddAnnouncement(ann)
+		proxy.AddAnnouncement(ann)
+	*/
 
 	// Convert IPv4 to uint32 in little-endian
 	advIP := binary.LittleEndian.Uint32(net.ParseIP("10.0.0.10").To4())
@@ -57,6 +58,16 @@ func main() {
 		klog.Fatal(err)
 	}
 
+	if err := r.AddRoute4(router.DSRKv4{
+		Advertised: advIP, // 10.0.0.10
+		Protocol:   0,     // ARP = 0
+		Port:       0,     // ARP = 0
+		Svlan:      0,     // No outer VLAN
+		Cvlan:      10,    // Customer VLAN 10
+	}, router.DSRPv4{}); err != nil {
+		klog.Fatal(err)
+	}
+
 	// Start the ARP announcer loop
 	go func() {
 		klog.Info("Starting ARP proxy on each announced interfaces.")
@@ -66,5 +77,7 @@ func main() {
 	}()
 
 	klog.Info("Starting eBPF XDP router.")
-	r.Listen()
+	if err := r.Listen(); err != nil {
+		klog.Fatal(err)
+	}
 }

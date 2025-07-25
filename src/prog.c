@@ -12,8 +12,28 @@
 
 #include "common/types.h"
 #include "common/mac.c"
+#include "common/arp.c"
 #include "common/802_1ad.c"
 #include "common/ip.c"
+
+/*
+ * router_hardware_address - BPF array map holding the router MAC.
+ *
+ * Type: BPF_MAP_TYPE_ARRAY
+ * Key:  __u32 (always 0)
+ * Value: __u8[6] (router MAC address)
+ * Max entries: 1
+ *
+ * Used by ARP replies to retrieve the router interface MAC,
+ * populated dynamically from user space.
+ */
+struct
+{
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1); /* Only one MAC stored */
+    __type(key, __u32);     /* Index, always 0 */
+    __type(value, __u8[6]); /* 6-byte MAC address */
+} router_hardware_address SEC(".maps");
 
 /*
  * events_rb
@@ -116,6 +136,8 @@ int xdp_prog_main(struct xdp_md *ctx)
     // Source svlan and cvlan
     u16 s_vlan = 0, c_vlan = 0;
 
+    u8 action;
+
     struct event *evt = bpf_ringbuf_reserve(&events_rb, sizeof(*evt), 0);
     if (!evt)
     {
@@ -151,11 +173,88 @@ int xdp_prog_main(struct xdp_md *ctx)
 
     /*
      * Special case: ARP packets
-     * ARP is always allowed (no further parsing)
+     *
+     * This block handles ARP packets received on the interface.
+     * Only IPv4 ARP requests are currently supported.
      */
     if (eth_proto == ETH_P_ARP)
     {
-        evt->action = ROUTER_ACTION_PASS;
+        /*
+         * Parse the ARP request from the current cursor position.
+         * This function extracts:
+         *  - arp: pointer to the ARP header
+         *  - sha: sender hardware address (MAC)
+         *  - sip: sender protocol address (IPv4)
+         *  - tha: target hardware address (MAC)
+         *  - tip: target protocol address (IPv4)
+         *
+         * If parsing fails or packet is malformed, skip processing.
+         */
+        struct arp_hdr *arp;
+        u8 *sha, *tha;
+        be32 *sip, *tip;
+        if (!parse_arp_request(cursor, data_end, &arp, &sha, &sip, &tha, &tip))
+            goto submit;
+
+        /*
+         * Only respond to ARP requests (opcode 1).
+         * Ignore ARP replies (opcode 2) and other unsupported opcodes.
+         */
+        if (arp->ar_op != bpf_htons(1))
+            goto submit;
+
+        /*
+         * Build the IPv4 lookup key for this ARP request.
+         *
+         * Fields:
+         *  - advertised: the ARP target IP we are being asked for
+         *  - protocol: set to 0 for ARP (no L4 protocol)
+         *  - port: set to 0 for ARP (no L4 port)
+         *  - svlan: outer VLAN ID from parsed event
+         *  - cvlan: inner VLAN ID from parsed event
+         *
+         * This key will be used to determine if the router should reply.
+         */
+        DSRKv4_t key4 = {};
+        key4.advertised = *tip;   /* ARP target IP */
+        key4.protocol = 0;        /* ARP has no L4 protocol */
+        key4.port = 0;            /* ARP has no L4 port */
+        key4.svlan = evt->s_vlan; /* VLAN S-tag from event */
+        key4.cvlan = evt->c_vlan; /* VLAN C-tag from event */
+
+        /*
+         * Perform a lookup in the routing_tablev4 map using the constructed key.
+         *
+         * If a valid route exists for the requested IP and VLAN combination,
+         * the router should reply. Otherwise, ignore the ARP request.
+         */
+        DSRPv4_t *path4 = bpf_map_lookup_elem(&routing_tablev4, &key4);
+        if (!path4)
+            goto submit;
+
+        /*
+         * Retrieve the router MAC address from the router_hardware_address map.
+         * If not set, we cannot respond to ARP requests.
+         */
+        const u8 *router_mac = bpf_map_lookup_elem(&router_hardware_address, &(u32){0});
+        if (!router_mac)
+        {
+            bpf_printk("No router hardware address defined. Unable to reply to incoming ARP requests!");
+            goto submit;
+        }
+
+        /*
+         * Construct and send an ARP reply in place.
+         * This updates:
+         *  - Ethernet MACs (swap original sender with our MAC)
+         *  - ARP opcode (set to reply)
+         *  - ARP sender fields (our MAC + our IP)
+         *  - ARP target fields (original sender MAC + IP)
+         */
+        arp_build_reply(ctx, offset_from_event(evt), arp, sha, sip, tha, tip, router_mac);
+
+        /* Mark the event action as ARP reply so the XDP program can transmit it. */
+        evt->action = ROUTER_ACTION_ARP;
         goto submit;
     }
 
@@ -197,7 +296,7 @@ int xdp_prog_main(struct xdp_md *ctx)
 
         /* Try to find a matching provider-facing path */
         path4 = bpf_map_lookup_elem(&routing_tablev4, &key4);
-        if (!path4)
+        if (!path4 || path4->advertised == 0 || path4->target == 0)
         {
             evt->action = ROUTER_ACTION_NO_ROUTE;
             goto submit;
@@ -255,12 +354,17 @@ int xdp_prog_main(struct xdp_md *ctx)
     evt->action = ROUTER_ACTION_FIB_FAILURE;
 
 submit:
+    __builtin_memcpy(&action, &evt->action, sizeof(action));
     bpf_ringbuf_submit(evt, 0);
-
-    if (evt->action == ROUTER_ACTION_PASS)
+    switch (action)
+    {
+    case ROUTER_ACTION_PASS:
         return XDP_PASS;
-
-    return XDP_PASS;
+    case ROUTER_ACTION_ARP:
+        return XDP_TX;
+    default:
+        return XDP_PASS;
+    }
 }
 
 // Required license for eBPF programs

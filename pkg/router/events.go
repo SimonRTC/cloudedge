@@ -86,16 +86,18 @@ func actionName(a uint8) string {
 	case 0:
 		return "DROP"
 	case 1:
-		return "REDIRECT"
+		return "ARP"
 	case 2:
-		return "PASS"
+		return "REDIRECT"
 	case 3:
-		return "NO_ROUTE"
+		return "PASS"
 	case 4:
-		return "FAILURE"
+		return "NO_ROUTE"
 	case 5:
-		return "FIB_FAILURE"
+		return "FAILURE"
 	case 6:
+		return "FIB_FAILURE"
+	case 7:
 		return "TTL_EXPIRED"
 	default:
 		return fmt.Sprintf("UNKNOWN(%d)", a)

@@ -45,6 +45,25 @@ struct vlan_hdr
 };
 
 /*
+ * Minimal ARP header structure for IPv4 over Ethernet.
+ *
+ * Fields:
+ *  - ar_hrd : Hardware type (should be 1 for Ethernet)
+ *  - ar_pro : Protocol type (should be ETH_P_IP for IPv4)
+ *  - ar_hln : Hardware address length (should be 6 for MAC)
+ *  - ar_pln : Protocol address length (should be 4 for IPv4)
+ *  - ar_op  : Opcode (1=request, 2=reply)
+ */
+struct arp_hdr
+{
+    be16 ar_hrd; /* hardware type (Ethernet = 1) */
+    be16 ar_pro; /* protocol type (IPv4 = 0x0800) */
+    u8 ar_hln;   /* hardware address length (MAC length = 6) */
+    u8 ar_pln;   /* protocol address length (IPv4 length = 4) */
+    be16 ar_op;  /* ARP opcode (1=request, 2=reply) */
+} __attribute__((packed));
+
+/*
  * Dynamic Software Routing Key for IPv4 (DSRKv4)
  *
  * **Customer-facing lookup key.**
@@ -177,6 +196,7 @@ struct DSRPv6
  * These constants define the possible actions that can be applied to an event.
  *
  * ROUTER_ACTION_DROP           : Packet is dropped and not forwarded.
+ * ROUTER_ACTION_ARP            : Reply to incoming ARP request
  * ROUTER_ACTION_REDIRECT       : Packet is redirected to another interface or path.
  * ROUTER_ACTION_PASS           : Packet is allowed without modification (bypass).
  * ROUTER_ACTION_NO_ROUTE       : No route and packet was dropped.
@@ -185,12 +205,13 @@ struct DSRPv6
  * ROUTER_ACTION_TTL_EXPIRED    : Packet expired and packet was dropped.
  */
 #define ROUTER_ACTION_DROP 0        /* Drop the packet */
-#define ROUTER_ACTION_REDIRECT 1    /* Redirect to another interface or next hop */
-#define ROUTER_ACTION_PASS 2        /* Accept without changes */
-#define ROUTER_ACTION_NO_ROUTE 3    /* No route available fro this packet */
-#define ROUTER_ACTION_FAILURE 4     /* Drop due to a processing failure */
-#define ROUTER_ACTION_FIB_FAILURE 5 /* Drop due to a next-hop resolving failure */
-#define ROUTER_ACTION_TTL_EXPIRED 6 /* Drop due to a expired packet TTL  */
+#define ROUTER_ACTION_ARP 1         /* Reply to ARP */
+#define ROUTER_ACTION_REDIRECT 2    /* Redirect to another interface or next hop */
+#define ROUTER_ACTION_PASS 3        /* Accept without changes */
+#define ROUTER_ACTION_NO_ROUTE 4    /* No route available fro this packet */
+#define ROUTER_ACTION_FAILURE 5     /* Drop due to a processing failure */
+#define ROUTER_ACTION_FIB_FAILURE 6 /* Drop due to a next-hop resolving failure */
+#define ROUTER_ACTION_TTL_EXPIRED 7 /* Drop due to a expired packet TTL  */
 
 /*
  * event

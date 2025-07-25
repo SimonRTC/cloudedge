@@ -24,13 +24,15 @@ type Router struct {
 	// Running interface name and index
 	ifname string
 	ifidx  int
+	ifmac  net.HardwareAddr
 
 	// eBPF program and hashmaps
-	XdpProg       *ebpf.Program `ebpf:"xdp_prog_main"`   // Main XDP NAT/forwarding program
-	RoutingTable4 *ebpf.Map     `ebpf:"routing_tablev4"` // Dynamic software routing table for IPv4 lookups
-	RoutingTable6 *ebpf.Map     `ebpf:"routing_tablev6"` // Dynamic software routing table for IPv6 lookups
-	Events        *ebpf.Map     `ebpf:"events_rb"`       // Logging events buffer
-	Drops         *ebpf.Map     `ebpf:"drop_errors"`     // Emergency drops
+	XdpProg        *ebpf.Program `ebpf:"xdp_prog_main"`           // Main XDP NAT/forwarding program
+	HadwareAddress *ebpf.Map     `ebpf:"router_hardware_address"` // Router Hadware Address (MAC)
+	RoutingTable4  *ebpf.Map     `ebpf:"routing_tablev4"`         // Dynamic software routing table for IPv4 lookups
+	RoutingTable6  *ebpf.Map     `ebpf:"routing_tablev6"`         // Dynamic software routing table for IPv6 lookups
+	Events         *ebpf.Map     `ebpf:"events_rb"`               // Logging events buffer
+	Drops          *ebpf.Map     `ebpf:"drop_errors"`             // Emergency drops
 }
 
 func NewRouter(ifname string) (*Router, error) {
@@ -44,6 +46,7 @@ func NewRouter(ifname string) (*Router, error) {
 	r := &Router{
 		ifname: iface.Name,
 		ifidx:  iface.Index,
+		ifmac:  iface.HardwareAddr,
 	}
 
 	// Load the embedded eBPF program and maps
@@ -65,6 +68,7 @@ func (r *Router) Listen() error {
 
 	defer r.XdpProg.Close()
 
+	defer r.HadwareAddress.Close()
 	defer r.Events.Close()
 	defer r.Drops.Close()
 
@@ -90,6 +94,12 @@ func (r *Router) Listen() error {
 	}
 
 	defer events.Close()
+
+	// Inject the hadware address (mac) of the router interface
+	var mkey uint32 = 0
+	if err := r.HadwareAddress.Put(mkey, r.ifmac); err != nil {
+		return fmt.Errorf("failed to set router MAC: %w", err)
+	}
 
 	// Setup signal handling to allow graceful shutdown
 	stop := make(chan os.Signal, 1)
